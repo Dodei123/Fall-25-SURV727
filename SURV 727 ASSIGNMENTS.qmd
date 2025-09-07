@@ -1,0 +1,33 @@
+---
+title: "SURV 727 TEAMWORK"
+format: revealjs
+editor: visual
+---
+
+## ASSIGNMENT 1
+
+Due at 11:59pm on September 16.
+
+This assignment is to be submitted individually. Turn in this assignment as an HTML or PDF file to ELMS. Make sure to include the R Markdown or Quarto file that was used to generate it. You should include the questions in your solutions. You may use the qmd file of the assignment provided to insert your answers.
+
+Git and GitHub
+
+1\) Provide the link to the GitHub repo that you used to practice git from Week 1. It should have:
+
+• Your name on the README file.
+
+• At least one commit with your name, with a description of what you did in that commit.
+
+Reading Data
+
+Download both the Angell.dta (Stata data format) dataset and the Angell.txt dataset from this website: https://stats.idre.ucla.edu/stata/examples/ara/applied-regression-analysis-by-fox-data-files/
+
+2\) Read in the .dta version and store in an object called angell_stata.
+
+3\) Read in the .txt version and store it in an object called angell_txt.
+
+4\) What are the differences between angell_stata and angell_txt? Are there differences in the classes of the individual columns?
+
+5\) Make any updates necessary so that angell_txt is the same as angell_stata.
+
+6\) Describe the Ethnic Heterogeneity variable. Use descriptive statistics such as mean, median,standard deviation, etc. How does it differ by region?

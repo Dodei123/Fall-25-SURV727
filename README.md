@@ -4,16 +4,11 @@ editor_options:
     wrap: 72
 ---
 
-#Surv727 made some changes. Yes me making changes
-
-1+2
-11+ 2
-
-### Trying  to make changes 
-### Course - Surv 727
-### Git Hub pratical
-### I have made changes in here 
-###Again
+## Name of Students
+# Lugu Reign Nicholas [121386816]
 
 This is a collaboration between myself and Doris for 
-SURV 727 withh Dr brian of JPSM
+SURV 727 with Dr brian of JPSM
+
+## COMMITS
+1. Commit 1: added a markdown file for collaboration on assignments with Doris
