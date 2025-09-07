@@ -6,9 +6,11 @@ editor_options:
 
 ## Name of Students
 # Lugu Reign Nicholas [121386816]
+# Doris Odei [121049063]
 
 This is a collaboration between myself and Doris for 
 SURV 727 with Dr brian of JPSM
 
 ## COMMITS
 1. Commit 1: added a markdown file for collaboration on assignments with Doris
+2. Commit 2: added my name and UID on assignments with Nicolas.
