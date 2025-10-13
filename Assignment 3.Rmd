@@ -1,0 +1,342 @@
+---
+title: "ASSIGNMENT 3 Web Scrappinng"
+author: "Lugu R Nicholas & Doris Odei"
+date: "2025-10-13"
+output:
+  pdf_document:
+    latex_engine: xelatex
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = TRUE, warning = TRUE)
+```
+
+```{r, include=FALSE}
+# Load
+library(xml2)
+library(rvest)
+library(robotstxt)
+
+library(dplyr)
+library(stringr)
+library(purrr)
+library(tidyr)
+library(tibble)
+library(forcats)
+
+library(janitor)
+library(readr)
+
+library(ggplot2)
+library(scales)
+
+library(tidytext)
+```
+
+
+## Part 1 — “Historical population” table from Grand Boulevard
+
+```{r}
+base_page <- "https://en.wikipedia.org/wiki/Grand_Boulevard,_Chicago"
+
+# robots.txt
+paths_allowed(base_page)
+
+gb_html <- read_html(base_page)
+
+table_nodes <- html_elements(gb_html, "table")
+tables_list <- html_table(table_nodes, fill = TRUE, header = TRUE, convert = FALSE)
+
+str(tables_list, max.level = 1)
+length(tables_list)
+
+# Captions helper
+table_captions <- table_nodes %>%
+  map_chr(~{
+    cap <- html_element(.x, "caption")
+    if (is.na(cap)) "" else html_text2(cap)
+  })
+
+hist_idx <- which(str_detect(str_to_lower(table_captions), "historical population"))
+
+# Fallback: detect by headers if no caption
+if (length(hist_idx) == 0) {
+  hist_idx <- tables_list %>%
+    imap_lgl(~{
+      nm <- names(.x) %>% str_to_lower()
+      any(str_detect(nm, "census|^year$|^date$")) &&
+        any(str_detect(nm, "pop|population"))
+    }) %>% which()
+}
+
+hist_idx
+```
+
+```{r}
+# Raw table 
+stopifnot(length(hist_idx) >= 1)
+gb_hist_raw <- tables_list[[hist_idx[1]]]
+head(gb_hist_raw)
+```
+
+```{r}
+# Cleanning
+gb_hist <- gb_hist_raw %>%
+  remove_empty(c("rows","cols")) %>%
+  clean_names()
+
+year_col <- names(gb_hist)[str_detect(names(gb_hist), "^year$|census|^date$")][1]
+pop_col  <- names(gb_hist)[str_detect(names(gb_hist), "pop")][1]
+
+gb_hist <- gb_hist %>%
+  select(Year = all_of(year_col), Grand_Boulevard = all_of(pop_col)) %>%
+  mutate(
+    Year = parse_number(Year),
+    Grand_Boulevard = parse_number(Grand_Boulevard)
+  ) %>%
+  filter(!is.na(Year), !is.na(Grand_Boulevard)) %>%
+  # drop non-year artifacts safely
+  filter(Year > 1000, Year < 2100) %>%
+  distinct(Year, .keep_all = TRUE) %>%
+  arrange(Year)
+
+gb_hist
+```
+
+## Part 2 — East neighbors vector
+
+```{r}
+east_titles <- c("Oakland,_Chicago", "Kenwood,_Chicago", "Hyde_Park,_Chicago")
+east_titles
+```
+
+
+## Part 3 Loop: collect Historical Population tables and adding via `cbind()`
+
+```{r}
+get_hist_population <- function(page_title, col_name = NULL){
+  url <- paste0("https://en.wikipedia.org/wiki/", page_title)
+  message("Scraping: ", url)
+  tryCatch({
+    pg    <- read_html(url)
+    tnodes <- html_elements(pg, "table")
+    tlist  <- html_table(tnodes, fill = TRUE, header = TRUE, convert = FALSE)
+
+    # Prefer caption match, fallback to header heuristic
+    caps <- tnodes %>% map_chr(~{
+      cap <- html_element(.x, "caption"); if (is.na(cap)) "" else html_text2(cap)
+    })
+    idx <- which(str_detect(str_to_lower(caps), "historical population"))
+    if (length(idx) == 0) {
+      idx <- tlist %>% imap_lgl(~{
+        nm <- names(.x) %>% str_to_lower()
+        any(str_detect(nm, "census|^year$|^date$")) &&
+          any(str_detect(nm, "pop|population"))
+      }) %>% which()
+    }
+    stopifnot(length(idx) >= 1)
+
+    tab <- tlist[[idx[1]]] %>%
+      remove_empty(c("rows","cols")) %>%
+      clean_names()
+
+    yr  <- names(tab)[str_detect(names(tab), "^year$|census|^date$")][1]
+    pop <- names(tab)[str_detect(names(tab), "pop")][1]
+
+    # Column name for this area
+    nm <- if (is.null(col_name)) {
+      page_title %>% sub("_,_Chicago$|,_Chicago$", "", .) %>% gsub("_"," ", ., fixed = TRUE)
+    } else col_name
+
+    out <- tab %>%
+      select(Year = all_of(yr), !!nm := all_of(pop)) %>%
+      mutate(
+        Year = parse_number(Year),
+        across(-Year, parse_number)
+      ) %>%
+      filter(!is.na(Year)) %>%
+      filter(Year > 1000, Year < 2100) %>%     # drop artifacts
+      distinct(Year, .keep_all = TRUE) %>%
+      arrange(Year)
+
+    out
+  }, error = function(e){
+    warning("Failed on: ", page_title, " — ", conditionMessage(e))
+    NULL
+  })
+}
+
+# Neighbor tables
+neighbors <- map(
+  east_titles,
+  ~ get_hist_population(
+      .x,
+      col_name = .x %>% str_replace(",_Chicago$", "") %>% str_replace_all("_"," ")
+    )
+)
+
+# Starting with Grand Boulevard
+cb_result <- gb_hist %>% arrange(Year)
+
+# For each neighbor, aligning by Year then cbind the new column(s)
+for (tab in neighbors) {
+  if (!is.null(tab)) {
+    aligned <- left_join(cb_result %>% select(Year), tab, by = "Year") %>% arrange(Year)
+    cb_result <- cbind(cb_result, aligned %>% select(-Year))
+  }
+}
+
+cb_result
+```
+
+## Part 4 — Scraping and Analyzing Text Data (tidytext)
+
+Goal: extract body text for Grand Boulevard and the east neighbors, clean,
+tokenize, and explore common words.
+
+```{r}
+
+get_description <- function(page_title){
+  url <- paste0("https://en.wikipedia.org/wiki/", page_title)
+  message("Scraping text: ", url)
+  tryCatch({
+    pg <- read_html(url)
+    ps <- html_elements(pg, css = "#mw-content-text .mw-parser-output > p, #mw-content-text .mw-parser-output > ul > li")
+    txt <- html_text2(ps)
+    txt <- txt[nchar(txt) > 0]
+    paste(txt, collapse = " ")
+  }, error = function(e){
+    warning("Failed to get description for ", page_title, " — ", conditionMessage(e))
+    NA_character_
+  })
+}
+
+text_pages <- c("Grand_Boulevard,_Chicago", east_titles) %>% unique()
+
+descriptions <- tibble(
+  page_title = text_pages,
+  location   = page_title %>% str_replace(",_Chicago$", "") %>% str_replace_all("_"," "),
+  text       = map_chr(page_title, get_description)
+)
+
+descriptions %>% select(location, text) %>% print(n = Inf)
+```
+
+```{r}
+# Tokenize and removing stop words / numerics / very common proper nouns
+data("stop_words")
+
+tokens <- descriptions %>%
+  select(location, text) %>%
+  unnest_tokens(token, text) %>%
+  anti_join(stop_words, by = c("token" = "word")) %>%
+  filter(!str_detect(token, "^[0-9]+$")) %>%
+  filter(!token %in% c("chicago","illinois","grand","boulevard"))
+
+head(tokens, 20)
+```
+
+### Most common words overall
+
+```{r fig.width=7, fig.height=5}
+
+top_overall <- tokens %>%
+  count(token, sort = TRUE) %>%
+  slice_max(n, n = 20)
+
+# top_overall
+top_overall %>%
+  mutate(token = fct_reorder(token, n)) %>%
+  ggplot(aes(x = token, y = n)) +
+  geom_col() +
+  coord_flip() +
+  labs(
+    title = "Top 20 Most Common Words (Overall)",
+    x = NULL, y = "Count"
+  )
+```
+
+### Top TF–IDF Terms by Location
+
+```{r fig.width=7, fig.height=5}
+
+# tidy helpers for facet reordering
+reorder_within <- function(x, by, within, fun = median, sep = "___") {
+  new_x <- paste(x, within, sep = sep)
+  stats::reorder(new_x, by, FUN = fun)
+}
+scale_y_reordered <- function(sep = "___") {
+  ggplot2::scale_y_discrete(labels = function(x) gsub(paste0(sep, ".+$"), "", x))
+}
+
+counts <- tokens %>%
+  count(location, token, sort = TRUE)
+
+tfidf_top <- counts %>%
+  bind_tf_idf(token, location, n) %>%
+  filter(n >= 2) %>%                     # (optional) drop 1-off tokens
+  group_by(location) %>%
+  slice_max(tf_idf, n = 10, with_ties = FALSE) %>%
+  ungroup() %>%
+  mutate(token = reorder_within(token, tf_idf, location))
+
+ggplot(tfidf_top, aes(x = tf_idf, y = token)) +
+  geom_col() +
+  facet_wrap(~ location, scales = "free_y") +
+  scale_y_reordered() +
+  labs(title = "Top TF–IDF Terms by Location",
+       x = "TF–IDF", y = NULL,
+       caption = "Higher TF–IDF = more distinctive within that location")
+
+```
+
+### Most common words by location
+```{r fig.width=7, fig.height=5}
+tokens_clean <- tokens %>%
+  mutate(token = str_replace(token, "'s$", "")) %>%      # chicago's -> chicago
+  filter(str_detect(token, "^[a-z]+$"))                  # keep alphabetic only
+
+loc_words <- tolower(descriptions$location) |> 
+  str_split("\\s+") |> unlist() |> unique()
+
+custom_stop <- tibble(word = c(loc_words,
+                               "south","street","avenue","park","house",
+                               "city","community","neighborhood","located"))
+
+top_by_loc_clean <- tokens_clean %>%
+  anti_join(stop_words, by = c("token" = "word")) %>%
+  anti_join(custom_stop, by = c("token" = "word")) %>%
+  count(location, token, sort = TRUE) %>%
+  group_by(location) %>%
+  slice_max(n, n = 10, with_ties = FALSE) %>%
+  ungroup() %>%
+  mutate(token = fct_reorder(token, n))
+
+ggplot(top_by_loc_clean, aes(x = token, y = n)) +
+  geom_col() +
+  coord_flip() +
+  facet_wrap(~ location, scales = "free_y") +
+  labs(title = "Most Common Words by Location",
+       x = NULL, y = "Count",
+       caption = "Source: Wikipedia pages for Grand Boulevard, Oakland, Kenwood, Hyde Park")
+
+```
+
+All four areas share history & demographics vocabulary (e.g., african, american, residents, historic), which fits South Side community histories.
+
+Differences line up with each neighborhood’s distinctive identity (university vs. residences vs. housing/redevelopment vs. notable residents).
+
+# Similarities vs. differences
+
+*Similarities*: All reference historic status and African American heritage; each includes built-environment terms (street/building/home) and lake adjacency where relevant.
+
+*Differences*:
+
+Hyde Park = academic/institutional (university, park/lake axis).
+
+Kenwood = historic residences + political/civic associations (Obama, landmark).
+
+Grand Boulevard = notable residents & migration themes (Bronzeville context).
+
+Oakland = housing/redevelopment narrative (constructed, buildings, population).
+
